@@ -1,0 +1,74 @@
+--- a/vesuvius/src/vesuvius/ink_detection/data/segment.py
++++ b/vesuvius/src/vesuvius/ink_detection/data/segment.py
+@@ -48,7 +48,7 @@
+     return None
+ 
+ 
+-def discover_segment_labels(
++def _discover_segment_labels(
+     segment: Segment, *, extension: str = ".zarr", required: bool = True
+ ) -> Segment:
+     """Resolve independently greatest versions, or one matching explicit version."""
+@@ -122,6 +122,62 @@
+     )
+ 
+ 
++def audit_validation_candidates(segment: Segment, *, extension: str = ".zarr", selected=None):
++    """Report filename candidates; a rejected file is not proof of a usable mask."""
++    import re
++    rows = []
++    requested = segment.data_config.label_version
++    for path in sorted(segment.segment_dir.iterdir()):
++        match = re.fullmatch(r"(.*)_validation_mask(?:_v([0-9]+))?(\.[^.]+)", path.name)
++        if match is None:
++            continue
++        prefix, version, suffix = match.groups()
++        reasons = []
++        if prefix != segment.segment_name:
++            reasons.append("prefix")
++        if suffix.lower() not in _LABEL_EXTENSIONS or suffix.lower() != str(extension).lower():
++            reasons.append("format")
++        if requested and requested != f"v{int(version or 1)}":
++            reasons.append("version")
++        is_selected = selected is not None and path == selected
++        if not reasons and not is_selected:
++            reasons.append("not_selected")
++        rows.append({"name": path.name, "prefix": prefix, "version": f"v{int(version or 1)}",
++                     "extension": suffix.lower(), "selected": is_selected, "reasons": reasons})
++    return rows
++
++
++def discover_segment_labels(
++    segment: Segment, *, extension: str = ".zarr", required: bool = True,
++    discarded_validation_policy: str = "warn", require_validation: bool = False,
++) -> Segment:
++    """Preserve label selection and make an unavailable validation mask explicit.
++
++    require_validation checks selection only, not array contents or patch counts.
++    Intentional no-validation callers may explicitly use policy="ignore".
++    """
++    if discarded_validation_policy not in {"warn", "error", "ignore"}:
++        raise ValueError("discarded_validation_policy must be warn, error, or ignore")
++    selected = _discover_segment_labels(segment, extension=extension, required=required)
++    if selected.validation_mask is not None:
++        return selected
++    candidates = audit_validation_candidates(segment, extension=extension)
++    if require_validation or (candidates and discarded_validation_policy == "error"):
++        raise ValueError(
++            f"Validation unavailable for {segment.segment_name}; requested version="
++            f"{segment.data_config.label_version!r}, extension={extension!r}; "
++            f"candidates={candidates!r}"
++        )
++    if candidates and discarded_validation_policy == "warn":
++        import warnings
++        warnings.warn(
++            f"Validation candidates discarded for {segment.segment_name}; requested version="
++            f"{segment.data_config.label_version!r}, extension={extension!r}; "
++            f"candidates={candidates!r}", RuntimeWarning, stacklevel=2,
++        )
++    return selected
++
++
+ def gather_segments(config: InkDataConfig) -> tuple[Segment, ...]:
+     """Discover usable segment representations in stable directory-name order."""
+     segments: list[Segment] = []
